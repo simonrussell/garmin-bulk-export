@@ -4,28 +4,73 @@ require 'dotenv/load'
 require 'ferrum'
 
 class Session
-  
+
   def initialize(**options)
     @options = options
   end
-  
+
+  def log(message)
+    puts message
+  end
+
+  def log_call(name, *args)
+    log "#{name}(#{args.map(&:inspect).join(', ')})"
+  end
+
   def browser
     @browser ||= Ferrum::Browser.new(**@options)
   end
-  
+
   def goto(url)
     browser.goto(url)
+    # wait_for_idle
+  end
+
+  def wait_for_idle
     browser.network.wait_for_idle
   end
-  
+
   def screenshot(**options)
     browser.screenshot(**options)
   end
-  
+
   def close
     browser.quit if @browser
   end
-  
+
+  def wait_for_css(css, within: nil)
+    log_call __method__, css, within: within
+
+    100.times do
+      field = (within || browser).at_css(css)
+      puts field.inspect
+      return field if field
+      sleep 0.1
+    end
+
+    raise "not found"
+  end
+
+  def wait_for_field(name, within: nil)
+    log_call __method__, name, within: within
+
+    wait_for_css("input[name='#{name}']", within: within)
+  end
+
+  def click_button(text, within: nil)
+    log_call __method__, text, within: within
+
+    (within || browser).at_xpath("//button[text()='#{text}']").click
+  end
+
+  def fill_in_field(name, value, within: nil)
+    log_call __method__, name, value, within: within
+
+    field = wait_for_field(name, within: within)
+    field.click
+    browser.keyboard.type(value)
+  end
+
   def self.open(url = nil, **options)
     session = new(**options)
     session.goto(url) if url
@@ -33,9 +78,27 @@ class Session
   ensure
     session.close
   end
-  
+
 end
 
-Session.open('https://simonrussell.net', headless: false) do |session|
-  session.screenshot(path: 'screenshot.png')
+Session.open('https://connect.garmin.com/signin', headless: false) do |session|
+  session.wait_for_css('iframe#gauth-widget-frame-gauth-widget')
+  frame = session.browser.frames.reject(&:main?).first
+
+  session.fill_in_field 'username', ENV['GARMIN_EMAIL'], within: frame
+  session.fill_in_field 'password', ENV['GARMIN_PASSWORD'], within: frame
+  session.click_button 'Sign In', within: frame
+
+  sleep 5
+
+  session.goto('https://connect.garmin.com/modern/activities')
+  session.wait_for_idle
+
+  list = session.wait_for_css('#pageContainer > div > div > div.row-fluid.list-items.flexItemAutoHeight')
+
+  10.times do
+    list.focus
+    list.type(:PageDown)
+    session.wait_for_idle
+  end
 end
