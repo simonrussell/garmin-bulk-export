@@ -1,0 +1,136 @@
+#!/usr/bin/env ruby
+
+require 'json'
+require 'fileutils'
+
+class Curler
+
+  def initialize(cookie)
+    @cookie = cookie
+  end
+
+  def get_command(url, additional_options: nil)
+    %(curl '#{url}' \
+      -H 'authority: connect.garmin.com' \
+      -H 'dnt: 1' \
+      -H 'upgrade-insecure-requests: 1' \
+      -H 'accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9' \
+      -H 'sec-fetch-site: none' \
+      -H 'sec-fetch-mode: navigate' \
+      -H 'sec-fetch-user: ?1' \
+      -H 'sec-fetch-dest: document' \
+      -H 'accept-language: en-GB,en;q=0.9' \
+      -H 'cookie: #{@cookie}' \
+      --http1.1 \
+      --silent \
+      --show-error \
+      --compressed \
+      #{additional_options}
+    )
+  end
+
+
+  def get(url, additional_options: nil)
+    result = `#{get_command(url, additional_options: additional_options)}`
+    raise "failed" if $? != 0
+    result
+  end
+
+  def get_json(url)
+    JSON.parse(get(url))
+  end
+
+  def download(url, filename)
+    get(url, additional_options: "--output #{filename}")
+  end
+
+end
+
+class Activity
+
+  attr_reader :id, :name, :started_at
+
+  def initialize(api:, id:, name:, started_at:)
+    @api = api
+    @id = id
+    @name = name
+    @started_at = started_at
+  end
+
+  def summary
+    "#{started_at}: #{name} (#{id})"
+  end
+
+  def download_tcx(filename)
+    @api.curler.download("https://connect.garmin.com/modern/proxy/download-service/export/tcx/activity/#{id}", filename)
+  end
+
+  def tcx_filename
+    "#{started_at.strftime('%Y%m%d-%H%M%S')}#{id}.tcx"
+  end
+
+  def download_zip(filename)
+    @api.curler.download("https://connect.garmin.com/modern/proxy/download-service/files/activity/#{id}", filename)
+  end
+
+  def zip_filename
+    "#{started_at.strftime('%Y%m%d-%H%M%S')}#{id}.zip"
+  end
+
+end
+
+class GarminApi
+  attr_reader :curler
+
+  def initialize(cookie:)
+    @curler = Curler.new(cookie)
+  end
+
+  def activities
+    @curler.get_json('https://connect.garmin.com/modern/proxy/activitylist-service/activities/search/activities?limit=1000').map do |activity|
+      Activity.new(
+        api: self,
+        id: activity.fetch('activityId').to_i,
+        name: activity.fetch('activityName'),
+        started_at: parse_time(activity.fetch('startTimeGMT'))
+      )
+    end.sort_by(&:started_at)
+  end
+
+  private
+
+  def parse_time(string)
+    raise "invalid time #{string}" unless string =~ /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/
+
+    Time.utc(
+      $1.to_i,
+      $2.to_i,
+      $3.to_i,
+      $4.to_i,
+      $5.to_i,
+      $6.to_i
+    )
+  end
+
+end
+
+garmin = GarminApi.new(cookie: File.read('.cookie'))
+
+FileUtils.mkdir_p('downloads')
+
+all_activities = garmin.activities
+all_activities.each_with_index do |activity, index|
+  puts "#{index + 1}/#{all_activities.length}: #{activity.summary}"
+
+  tcx_path = File.join('downloads', activity.tcx_filename)
+  unless File.exist?(tcx_path)
+    puts "  downloading TCX"
+    activity.download_tcx(tcx_path)
+  end
+
+  zip_path = File.join('downloads', activity.zip_filename)
+  unless File.exist?(zip_path)
+    puts "  downloading ZIP"
+    activity.download_zip(zip_path)
+  end
+end
