@@ -1,0 +1,41 @@
+#!/usr/bin/env ruby
+
+require 'dotenv/load'
+require 'ferrum'
+
+class Session
+  
+  def initialize(**options)
+    @options = options
+  end
+  
+  def browser
+    @browser ||= Ferrum::Browser.new(**@options)
+  end
+  
+  def goto(url)
+    browser.goto(url)
+    browser.network.wait_for_idle
+  end
+  
+  def screenshot(**options)
+    browser.screenshot(**options)
+  end
+  
+  def close
+    browser.quit if @browser
+  end
+  
+  def self.open(url = nil, **options)
+    session = new(**options)
+    session.goto(url) if url
+    yield session
+  ensure
+    session.close
+  end
+  
+end
+
+Session.open('https://simonrussell.net', headless: false) do |session|
+  session.screenshot(path: 'screenshot.png')
+end
